@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -535,46 +536,78 @@ func getInProgressEthTxAttempts(s *store.Store, address gethCommon.Address) ([]m
 	return attempts, errors.Wrap(err, "getInProgressEthTxAttempts failed")
 }
 
-// FindEthTxsRequiringNewAttempt returns transactions that have all
-// attempts which are unconfirmed for at least gasBumpThreshold blocks,
-// limited by limit pending transactions
+// TODO: test that it doesnt return dupes
+// TODO: test nonce ordering
+// TODO: dox
 func FindEthTxsRequiringNewAttempt(db *gorm.DB, address gethCommon.Address, blockNum, gasBumpThreshold, depth int64) (etxs []models.EthTx, err error) {
-	var etxBumps, etxInsufficientEths []models.EthTx
+	// NOTE: These two queries could be combined into one using union but it
+	// becomes harder to read and difficult to test in isolation. KISS principle
+	etxInsufficientEths, err := FindEthTxsRequiringResubmissionDueToInsufficientEth(db, address)
+	if err != nil {
+		return nil, err
+	}
 
+	etxBumps, err := FindEthTxsRequiringGasBump(db, address, blockNum, gasBumpThreshold, depth)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[int64]struct{})
+
+	for _, etx := range etxInsufficientEths {
+		seen[etx.ID] = struct{}{}
+		etxs = append(etxs, etx)
+	}
+	for _, etx := range etxBumps {
+		if _, exists := seen[etx.ID]; !exists {
+			etxs = append(etxs, etx)
+		}
+	}
+
+	sort.Slice(etxs, func(i, j int) bool {
+		return *(etxs[i].Nonce) < *(etxs[j].Nonce)
+	})
+
+	return
+}
+
+// TODO: test other addresses are ignored
+// TODO: test generally
+func FindEthTxsRequiringResubmissionDueToInsufficientEth(db *gorm.DB, address gethCommon.Address) (etxs []models.EthTx, err error) {
 	err = db.
 		Preload("EthTxAttempts", func(db *gorm.DB) *gorm.DB {
 			return db.Order("eth_tx_attempts.gas_price DESC")
 		}).
 		Joins("INNER JOIN eth_tx_attempts ON eth_txes.id = eth_tx_attempts.eth_tx_id AND eth_tx_attempts.state = 'insufficient_eth'").
-		Find(&etxInsufficientEths).Error
+		Where("eth_txes.from_address = ?", address).
+		Order("nonce ASC").
+		Find(&etxs).Error
 
-	if err != nil {
-		return nil, errors.Wrap(err, "FindEthTxsRequiringNewAttempt failed to load eth_txes having insufficient eth")
-	}
+	err = errors.Wrap(err, "FindEthTxsRequiringResubmissionDueToInsufficientEth failed to load eth_txes having insufficient eth")
 
-	qBumps := db.
+	return
+
+}
+
+// TODO: test other addresses are ignored
+// FindEthTxsRequiringGasBump returns transactions that have all
+// attempts which are unconfirmed for at least gasBumpThreshold blocks,
+// limited by limit pending transactions
+func FindEthTxsRequiringGasBump(db *gorm.DB, address gethCommon.Address, blockNum, gasBumpThreshold, depth int64) (etxs []models.EthTx, err error) {
+	q := db.
 		Preload("EthTxAttempts", func(db *gorm.DB) *gorm.DB {
 			return db.Order("eth_tx_attempts.gas_price DESC")
 		}).
 		Joins("LEFT JOIN eth_tx_attempts ON eth_txes.id = eth_tx_attempts.eth_tx_id "+
 			"AND (broadcast_before_block_num > ? OR broadcast_before_block_num IS NULL OR eth_tx_attempts.state != 'broadcast')", blockNum-gasBumpThreshold).
-		Where("eth_txes.state = 'unconfirmed' AND eth_tx_attempts.id IS NULL")
+		Where("eth_txes.state = 'unconfirmed' AND eth_tx_attempts.id IS NULL AND eth_txes.from_address = ?", address)
 
 	if depth > 0 {
-		qBumps = qBumps.Where("eth_txes.id IN (SELECT id FROM eth_txes WHERE state = 'unconfirmed' AND from_address = ? ORDER BY nonce ASC LIMIT ?)", address, depth)
+		q = q.Where("eth_txes.id IN (SELECT id FROM eth_txes WHERE state = 'unconfirmed' AND from_address = ? ORDER BY nonce ASC LIMIT ?)", address, depth)
 	}
 
-	err = qBumps.Order("nonce ASC").Find(&etxBumps).Error
-	if err != nil {
-		return nil, errors.Wrap(err, "FindEthTxsRequiringNewAttempt failed to load eth_txes requiring gas bump")
-	}
-
-	for _, etx := range etxInsufficientEths {
-		etxs = append(etxs, etx)
-	}
-	for _, etx := range etxBumps {
-		etxs = append(etxs, etx)
-	}
+	err = q.Order("nonce ASC").Find(&etxs).Error
+	err = errors.Wrap(err, "FindEthTxsRequiringGasBump failed to load eth_txes requiring gas bump")
 
 	return
 }

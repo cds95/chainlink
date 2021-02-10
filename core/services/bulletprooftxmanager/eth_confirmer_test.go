@@ -800,6 +800,48 @@ func TestEthConfirmer_CheckForReceipts_confirmed_missing_receipt(t *testing.T) {
 	})
 }
 
+func TestEthConfirmer_FindEthTxsRequiringResubmissionDueToInsufficientEth(t *testing.T) {
+	t.Parallel()
+
+	store, cleanup := cltest.NewStore(t)
+	defer cleanup()
+
+	_, fromAddress := cltest.MustAddRandomKeyToKeystore(t, store, 0)
+	_, otherAddress := cltest.MustAddRandomKeyToKeystore(t, store, 0)
+
+	// Insert order is mixed up to test sorting
+	etx2 := cltest.MustInsertUnconfirmedEthTxWithInsufficientEthAttempt(t, store, 1, fromAddress)
+	etx3 := cltest.MustInsertUnconfirmedEthTxWithBroadcastAttempt(t, store, 2, fromAddress)
+	attempt3_2 := cltest.NewEthTxAttempt(t, etx3.ID)
+	attempt3_2.State = models.EthTxAttemptInsufficientEth
+	attempt3_2.GasPrice = *utils.NewBig(big.NewInt(100))
+	require.NoError(t, store.DB.Save(&attempt3_2).Error)
+	etx1 := cltest.MustInsertUnconfirmedEthTxWithInsufficientEthAttempt(t, store, 0, fromAddress)
+
+	// These should never be returned
+	cltest.MustInsertUnconfirmedEthTxWithBroadcastAttempt(t, store, 3, fromAddress)
+	cltest.MustInsertConfirmedEthTxWithAttempt(t, store, 4, 100, fromAddress)
+	cltest.MustInsertUnconfirmedEthTxWithInsufficientEthAttempt(t, store, 0, otherAddress)
+
+	t.Run("returns all eth_txes with at least one attempt that is in insufficient_eth state", func(t *testing.T) {
+		etxs, err := bulletprooftxmanager.FindEthTxsRequiringResubmissionDueToInsufficientEth(store.DB, fromAddress)
+		require.NoError(t, err)
+
+		assert.Len(t, etxs, 3)
+
+		for _, e := range etxs {
+			fmt.Println("BALLS", *e.Nonce)
+		}
+
+		assert.Equal(t, *etx1.Nonce, *etxs[0].Nonce)
+		assert.Equal(t, etx1.ID, etxs[0].ID)
+		assert.Equal(t, *etx2.Nonce, *etxs[1].Nonce)
+		assert.Equal(t, etx2.ID, etxs[1].ID)
+		assert.Equal(t, *etx3.Nonce, *etxs[2].Nonce)
+		assert.Equal(t, etx3.ID, etxs[2].ID)
+	})
+}
+
 func TestEthConfirmer_FindEthTxsRequiringNewAttempt(t *testing.T) {
 	t.Parallel()
 
