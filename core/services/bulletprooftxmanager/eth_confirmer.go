@@ -539,22 +539,42 @@ func getInProgressEthTxAttempts(s *store.Store, address gethCommon.Address) ([]m
 // attempts which are unconfirmed for at least gasBumpThreshold blocks,
 // limited by limit pending transactions
 func FindEthTxsRequiringNewAttempt(db *gorm.DB, address gethCommon.Address, blockNum, gasBumpThreshold, depth int64) (etxs []models.EthTx, err error) {
-	q := db.
+	var etxBumps, etxInsufficientEths []models.EthTx
+
+	err = db.
+		Preload("EthTxAttempts", func(db *gorm.DB) *gorm.DB {
+			return db.Order("eth_tx_attempts.gas_price DESC")
+		}).
+		Joins("INNER JOIN eth_tx_attempts ON eth_txes.id = eth_tx_attempts.eth_tx_id AND eth_tx_attempts.state = 'insufficient_eth'").
+		Find(&etxInsufficientEths).Error
+
+	if err != nil {
+		return nil, errors.Wrap(err, "FindEthTxsRequiringNewAttempt failed to load eth_txes having insufficient eth")
+	}
+
+	qBumps := db.
 		Preload("EthTxAttempts", func(db *gorm.DB) *gorm.DB {
 			return db.Order("eth_tx_attempts.gas_price DESC")
 		}).
 		Joins("LEFT JOIN eth_tx_attempts ON eth_txes.id = eth_tx_attempts.eth_tx_id "+
-			"AND eth_tx_attempts.state != 'insufficient_eth' "+
 			"AND (broadcast_before_block_num > ? OR broadcast_before_block_num IS NULL OR eth_tx_attempts.state != 'broadcast')", blockNum-gasBumpThreshold).
 		Where("eth_txes.state = 'unconfirmed' AND eth_tx_attempts.id IS NULL")
 
 	if depth > 0 {
-		q = q.Where("eth_txes.id IN (SELECT id FROM eth_txes WHERE state = 'unconfirmed' AND from_address = ? ORDER BY nonce ASC LIMIT ?)", address, depth)
+		qBumps = qBumps.Where("eth_txes.id IN (SELECT id FROM eth_txes WHERE state = 'unconfirmed' AND from_address = ? ORDER BY nonce ASC LIMIT ?)", address, depth)
 	}
 
-	err = q.Order("nonce ASC").Find(&etxs).Error
+	err = qBumps.Order("nonce ASC").Find(&etxBumps).Error
+	if err != nil {
+		return nil, errors.Wrap(err, "FindEthTxsRequiringNewAttempt failed to load eth_txes requiring gas bump")
+	}
 
-	err = errors.Wrap(err, "FindEthTxsRequiringNewAttempt failed")
+	for _, etx := range etxInsufficientEths {
+		etxs = append(etxs, etx)
+	}
+	for _, etx := range etxBumps {
+		etxs = append(etxs, etx)
+	}
 
 	return
 }

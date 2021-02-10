@@ -1564,7 +1564,6 @@ func TestEthConfirmer_BumpGasWhereNecessary_WhenOutOfEth(t *testing.T) {
 	config, cleanup := cltest.NewConfig(t)
 	defer cleanup()
 
-	ec := bulletprooftxmanager.NewEthConfirmer(store, config)
 	currentHead := int64(30)
 	oldEnough := int64(19)
 	nonce := int64(0)
@@ -1579,6 +1578,8 @@ func TestEthConfirmer_BumpGasWhereNecessary_WhenOutOfEth(t *testing.T) {
 	insufficientEthError := errors.New("insufficient funds for gas * price + value")
 
 	t.Run("saves attempt with state 'insufficient_eth' if eth node returns this error", func(t *testing.T) {
+		ec := bulletprooftxmanager.NewEthConfirmer(store, config)
+
 		expectedBumpedGasPrice := big.NewInt(25000000000)
 		require.Greater(t, expectedBumpedGasPrice.Int64(), attempt1_1.GasPrice.ToInt().Int64())
 
@@ -1605,6 +1606,8 @@ func TestEthConfirmer_BumpGasWhereNecessary_WhenOutOfEth(t *testing.T) {
 	})
 
 	t.Run("does not bump gas when previous error was 'out of eth', instead resubmits existing transaction", func(t *testing.T) {
+		ec := bulletprooftxmanager.NewEthConfirmer(store, config)
+
 		expectedBumpedGasPrice := big.NewInt(25000000000)
 		require.Greater(t, expectedBumpedGasPrice.Int64(), attempt1_1.GasPrice.ToInt().Int64())
 
@@ -1630,6 +1633,8 @@ func TestEthConfirmer_BumpGasWhereNecessary_WhenOutOfEth(t *testing.T) {
 	})
 
 	t.Run("saves the attempt as broadcast after node wallet has been topped up with sufficient balance", func(t *testing.T) {
+		ec := bulletprooftxmanager.NewEthConfirmer(store, config)
+
 		expectedBumpedGasPrice := big.NewInt(25000000000)
 		require.Greater(t, expectedBumpedGasPrice.Int64(), attempt1_1.GasPrice.ToInt().Int64())
 
@@ -1650,6 +1655,32 @@ func TestEthConfirmer_BumpGasWhereNecessary_WhenOutOfEth(t *testing.T) {
 		attempt1_2 = etx.EthTxAttempts[1]
 		assert.Equal(t, expectedBumpedGasPrice.Int64(), attempt1_2.GasPrice.ToInt().Int64())
 		assert.Equal(t, models.EthTxAttemptBroadcast, attempt1_2.State)
+
+		ethClient.AssertExpectations(t)
+	})
+
+	t.Run("resubmitting due to insufficient eth is not limited by ETH_GAS_BUMP_TX_DEPTH", func(t *testing.T) {
+		depth := 2
+		etxCount := 4
+
+		config.Set("ETH_GAS_BUMP_TX_DEPTH", depth)
+		ec := bulletprooftxmanager.NewEthConfirmer(store, config)
+
+		for i := 0; i < etxCount; i++ {
+			n := nonce
+			cltest.MustInsertUnconfirmedEthTxWithInsufficientEthAttempt(t, store, nonce, fromAddress)
+			ethClient.On("SendTransaction", mock.Anything, mock.MatchedBy(func(tx *gethTypes.Transaction) bool {
+				return tx.Nonce() == uint64(n)
+			})).Return(nil).Once()
+
+			nonce++
+		}
+
+		require.NoError(t, ec.BumpGasWhereNecessary(context.TODO(), keys, currentHead))
+
+		var attempts []models.EthTxAttempt
+		require.NoError(t, store.DB.Where("state = 'insufficient_eth'").Find(&attempts).Error)
+		require.Len(t, attempts, 0)
 
 		ethClient.AssertExpectations(t)
 	})
