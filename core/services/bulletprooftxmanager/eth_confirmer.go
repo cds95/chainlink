@@ -694,6 +694,7 @@ func (ec *ethConfirmer) handleInProgressAttempt(ctx context.Context, etx models.
 	}
 
 	if sendError == nil {
+		logger.Debugw("EthConfirmer: successfully broadcast transaction", "ethTxID", etx.ID, "ethTxAttemptID", attempt.ID, "txHash", attempt.Hash.Hex())
 		return saveSentAttempt(ec.store.DB, &attempt)
 	}
 
