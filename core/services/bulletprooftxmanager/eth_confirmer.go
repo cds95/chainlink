@@ -484,17 +484,17 @@ func (ec *ethConfirmer) bumpGasWhereNecessary(ctx context.Context, address gethC
 
 	threshold := int64(ec.config.EthGasBumpThreshold())
 	depth := int64(ec.config.EthGasBumpTxDepth())
-	etxs, err := FindEthTxsRequiringNewAttempt(ec.store.DB, address, blockHeight, threshold, depth)
+	etxs, err := FindEthTxsRequiringRebroadcast(ec.store.DB, address, blockHeight, threshold, depth)
 	if err != nil {
-		return errors.Wrap(err, "FindEthTxsRequiringNewAttempt failed")
+		return errors.Wrap(err, "FindEthTxsRequiringRebroadcast failed")
 	}
 	if len(etxs) > 0 {
 		logger.Debugf("EthConfirmer: Bumping gas for %v transactions", len(etxs))
 	}
 	for _, etx := range etxs {
-		attempt, err := ec.newAttemptWithGasBump(etx)
+		attempt, err := ec.attemptForRebroadcast(etx)
 		if err != nil {
-			return errors.Wrap(err, "newAttemptWithGasBump failed")
+			return errors.Wrap(err, "attemptForRebroadcast failed")
 		}
 
 		logger.Debugw("EthConfirmer: Bumping gas for transaction", "ethTxID", etx.ID, "nonce", etx.Nonce, "nPreviousAttempts", len(etx.EthTxAttempts), "gasPrice", attempt.GasPrice)
@@ -536,9 +536,9 @@ func getInProgressEthTxAttempts(s *store.Store, address gethCommon.Address) ([]m
 	return attempts, errors.Wrap(err, "getInProgressEthTxAttempts failed")
 }
 
-// FindEthTxsRequiringNewAttempt returns attempts that hit insufficient eth,
+// FindEthTxsRequiringRebroadcast returns attempts that hit insufficient eth,
 // and attempts that need bumping, in nonce ASC order
-func FindEthTxsRequiringNewAttempt(db *gorm.DB, address gethCommon.Address, blockNum, gasBumpThreshold, depth int64) (etxs []models.EthTx, err error) {
+func FindEthTxsRequiringRebroadcast(db *gorm.DB, address gethCommon.Address, blockNum, gasBumpThreshold, depth int64) (etxs []models.EthTx, err error) {
 	// NOTE: These two queries could be combined into one using union but it
 	// becomes harder to read and difficult to test in isolation. KISS principle
 	etxInsufficientEths, err := FindEthTxsRequiringResubmissionDueToInsufficientEth(db, address)
@@ -611,7 +611,7 @@ func FindEthTxsRequiringGasBump(db *gorm.DB, address gethCommon.Address, blockNu
 	return
 }
 
-func (ec *ethConfirmer) newAttemptWithGasBump(etx models.EthTx) (attempt models.EthTxAttempt, err error) {
+func (ec *ethConfirmer) attemptForRebroadcast(etx models.EthTx) (attempt models.EthTxAttempt, err error) {
 	var bumpedGasPrice *big.Int
 	if len(etx.EthTxAttempts) > 0 {
 		previousAttempt := etx.EthTxAttempts[0]
