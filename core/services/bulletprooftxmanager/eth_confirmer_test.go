@@ -829,10 +829,6 @@ func TestEthConfirmer_FindEthTxsRequiringResubmissionDueToInsufficientEth(t *tes
 
 		assert.Len(t, etxs, 3)
 
-		for _, e := range etxs {
-			fmt.Println("BALLS", *e.Nonce)
-		}
-
 		assert.Equal(t, *etx1.Nonce, *etxs[0].Nonce)
 		assert.Equal(t, etx1.ID, etxs[0].ID)
 		assert.Equal(t, *etx2.Nonce, *etxs[1].Nonce)
@@ -860,7 +856,7 @@ func TestEthConfirmer_FindEthTxsRequiringNewAttempt(t *testing.T) {
 	mustInsertConfirmedEthTx(t, store, nonce, fromAddress)
 	nonce++
 
-	_, otherAddress := cltest.MustAddRandomKeyToKeystore(t, store)
+	_, otherAddress := cltest.MustAddRandomKeyToKeystore(t, store, 0)
 
 	t.Run("returns nothing when there are no transactions", func(t *testing.T) {
 		etxs, err := bulletprooftxmanager.FindEthTxsRequiringNewAttempt(store.DB, fromAddress, currentHead, gasBumpThreshold, 10)
@@ -921,7 +917,11 @@ func TestEthConfirmer_FindEthTxsRequiringNewAttempt(t *testing.T) {
 	})
 
 	etxWithoutAttempts := cltest.NewEthTx(t, store, fromAddress)
-	etxWithoutAttempts.Nonce = &nonce
+	{
+		n := nonce
+		fmt.Println("BALLS n", n)
+		etxWithoutAttempts.Nonce = &n
+	}
 	now := time.Now()
 	etxWithoutAttempts.BroadcastAt = &now
 	etxWithoutAttempts.State = models.EthTxUnconfirmed
@@ -948,6 +948,12 @@ func TestEthConfirmer_FindEthTxsRequiringNewAttempt(t *testing.T) {
 	attempt3_1 := etx3.EthTxAttempts[0]
 	attempt3_1.BroadcastBeforeBlockNum = &oldEnough
 	require.NoError(t, store.DB.Save(&attempt3_1).Error)
+
+	// NOTE: It should ignore qualifying eth_txes from a different address
+	etxOther := cltest.MustInsertUnconfirmedEthTxWithBroadcastAttempt(t, store, 0, otherAddress)
+	attemptOther1 := etxOther.EthTxAttempts[0]
+	attemptOther1.BroadcastBeforeBlockNum = &oldEnough
+	require.NoError(t, store.DB.Save(&attemptOther1).Error)
 
 	t.Run("returns the transaction if it is unconfirmed with an attempt that is older than gasBumpThreshold blocks", func(t *testing.T) {
 		etxs, err := bulletprooftxmanager.FindEthTxsRequiringNewAttempt(store.DB, fromAddress, currentHead, gasBumpThreshold, 10)
@@ -1034,7 +1040,36 @@ func TestEthConfirmer_FindEthTxsRequiringNewAttempt(t *testing.T) {
 
 		require.Len(t, etxs, 2)
 		assert.Equal(t, etxWithoutAttempts.ID, etxs[0].ID)
+		assert.Equal(t, *etxWithoutAttempts.Nonce, *(etxs[0].Nonce))
+		require.Equal(t, int64(5), *etxWithoutAttempts.Nonce)
 		assert.Equal(t, etx4.ID, etxs[1].ID)
+		assert.Equal(t, *etx4.Nonce, *(etxs[1].Nonce))
+		require.Equal(t, int64(7), *etx4.Nonce)
+	})
+
+	attempt0_1 := newBroadcastEthTxAttempt(t, etxWithoutAttempts.ID, store)
+	attempt0_1.State = models.EthTxAttemptInsufficientEth
+	require.NoError(t, store.DB.Save(&attempt0_1).Error)
+
+	attempt4_2 := cltest.NewEthTxAttempt(t, etx4.ID)
+	attempt4_2.State = models.EthTxAttemptInProgress
+	attempt4_2.GasPrice = *utils.NewBigI(40000)
+	require.NoError(t, store.DB.Save(&attempt4_2).Error)
+
+	etx5 := cltest.MustInsertUnconfirmedEthTxWithInsufficientEthAttempt(t, store, nonce, fromAddress)
+	nonce++
+
+	t.Run("returns unique attempts requiring resubmission due to insufficient eth, ordered by nonce asc", func(t *testing.T) {
+		etxs, err := bulletprooftxmanager.FindEthTxsRequiringNewAttempt(store.DB, fromAddress, currentHead, gasBumpThreshold, 10)
+		require.NoError(t, err)
+
+		require.Len(t, etxs, 3)
+		assert.Equal(t, etxWithoutAttempts.ID, etxs[0].ID)
+		assert.Equal(t, *etxWithoutAttempts.Nonce, *(etxs[0].Nonce))
+		assert.Equal(t, etx4.ID, etxs[1].ID)
+		assert.Equal(t, *etx4.Nonce, *(etxs[1].Nonce))
+		assert.Equal(t, etx5.ID, etxs[2].ID)
+		assert.Equal(t, *etx5.Nonce, *(etxs[2].Nonce))
 	})
 }
 

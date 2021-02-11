@@ -536,9 +536,8 @@ func getInProgressEthTxAttempts(s *store.Store, address gethCommon.Address) ([]m
 	return attempts, errors.Wrap(err, "getInProgressEthTxAttempts failed")
 }
 
-// TODO: test that it doesnt return dupes
-// TODO: test nonce ordering
-// TODO: dox
+// FindEthTxsRequiringNewAttempt returns attempts that hit insufficient eth,
+// and attempts that need bumping, in nonce ASC order
 func FindEthTxsRequiringNewAttempt(db *gorm.DB, address gethCommon.Address, blockNum, gasBumpThreshold, depth int64) (etxs []models.EthTx, err error) {
 	// NOTE: These two queries could be combined into one using union but it
 	// becomes harder to read and difficult to test in isolation. KISS principle
@@ -571,8 +570,9 @@ func FindEthTxsRequiringNewAttempt(db *gorm.DB, address gethCommon.Address, bloc
 	return
 }
 
-// TODO: test other addresses are ignored
-// TODO: test generally
+// FindEthTxsRequiringResubmissionDueToInsufficientEth returns transactions
+// that need to be re-sent because they hit an out-of-eth error on a previous
+// block
 func FindEthTxsRequiringResubmissionDueToInsufficientEth(db *gorm.DB, address gethCommon.Address) (etxs []models.EthTx, err error) {
 	err = db.
 		Preload("EthTxAttempts", func(db *gorm.DB) *gorm.DB {
@@ -589,7 +589,6 @@ func FindEthTxsRequiringResubmissionDueToInsufficientEth(db *gorm.DB, address ge
 
 }
 
-// TODO: test other addresses are ignored
 // FindEthTxsRequiringGasBump returns transactions that have all
 // attempts which are unconfirmed for at least gasBumpThreshold blocks,
 // limited by limit pending transactions
